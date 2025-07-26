@@ -14,14 +14,12 @@ This repository contains an advanced n8n workflow that acts as a mini Security O
 
 ```mermaid
 graph TD
-    A[Wazuh Manager] -->|Critical Alerts via Integrator| B(n8n Webhook);
-
-    subgraph "n8n Workflow"
+    A[Wazuh Manager] -->|Alerts via Integrator| B(n8n Webhook);
     B --> C{If Level >= 4};
     C --> D[Normalize & Deduplicate];
-    D --> E[AI Summarization (Gemini)];
-    E --> F[Send to Telegram];
-    end
+    D --> E[AI Summarization with Gemini];
+    E --> F[Send Notification to Telegram];
+    D --> G[Log to Elasticsearch];
 ```
 
 ## 🛠️ Prerequisites
