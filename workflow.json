@@ -1,0 +1,186 @@
+{
+  "name": "Wazuh SOAR Workflow with AI Summarization",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "YOUR_WEBHOOK_PATH_HERE",
+        "options": {
+          "rawBody": true
+        }
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -592,
+        -208
+      ],
+      "id": "dd7b28a4-4e9b-45af-ab06-ab964a49ca20",
+      "name": "Webhook",
+      "notesInFlow": true,
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        128,
+        112
+      ],
+      "id": "2160508d-9d58-414d-9a65-8c06aa36cc6f",
+      "name": "Google Gemini Chat Model",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "=*🚨 Wazuh Alert Summary* {{ $('Summarization Chain 1').item.json.output.text }}\n",
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        496,
+        -224
+      ],
+      "id": "1c21353b-8406-4cc2-9c87-e3daf96887da",
+      "name": "Send a text message",
+      "credentials": {}
+    },
+    {
+      "parameters": {
+        "options": {
+          "summarizationMethodAndPrompts": {
+            "values": {
+              "combineMapPrompt": "=",
+              "prompt": "=You are an elite SOC analyst.  \n\nAnswer **only** in French.  \n\nStructure your answer in **3 short bullet points** (max 400 chars total).  \n\nAlert received:  \n\n- Severity : {{$json.severity}}  \n- Rule ID : {{$json.rule.id}} – {{$json.rule.description}}  \n- Agent : {{$json.agent.name}} ({{$json.agent.ip}})  \n- Source IP: {{$json.src.ip}}  \n- Dest IP : {{$json.dst.ip}}  \n- File path: {{$json.file.path}} - {{$json.file.size}} - {{$json.file.owner}} - {{$json.file.md5}} - {{$json.file.sha1}} - {{$json.file.sha256}}  \n- Timestamp: {{$json.timestamp}}  \n\nFull log:  \n\n{{$json.log.message}}  \n\nRequired output:  \n\n1. 🎯 **Type de menace & impact** \n2. 📍 **Analyse de l'IP source** \n3. ⚡ **3 actions immédiates** (inclure blocage IP si l'IP source ≠ « unknown »)  \n\nKeep it concise, no introduction, no conclusion."
+            }
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainSummarization",
+      "typeVersion": 2.1,
+      "position": [
+        128,
+        -160
+      ],
+      "id": "850360cc-6253-4ecd-a76e-c7c82a5bba7e",
+      "name": "Summarization Chain 1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "284ff32c-1117-4d7f-8aeb-6eb19a98cc4d",
+              "leftValue": "={{ $json.body.parameters.alert.rule.level }}",
+              "rightValue": 4,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {
+          "ignoreCase": true
+        }
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -368,
+        -208
+      ],
+      "id": "6ca634f0-8547-4538-bbf3-35c04abcaab2",
+      "name": "If alerts >=4"
+    },
+    {
+      "parameters": {
+        "jsCode": "/* ==========================================================\n    ENTERPRISE DEDUPLICATION & NORMALIZATION\n    (utilise les mêmes champs que votre script actuel)\n    ========================================================== */\n\nconst TTL_MAP = {\n  'CRITICAL': 300_000,  // 5 min\n  'HIGH': 180_000,      // 3 min\n  'MEDIUM': 120_000,    // 2 min\n  'LOW': 60_000         // 1 min\n};\n\nconst MAX_CACHE = 1000;\nconst now = Date.now();\n\n/* Persistent cache */\nconst cache = $getWorkflowStaticData('global');\ncache.dedup ??= {};\n\n/* Auto-cleanup LRU */\nfor (const k in cache.dedup) {\n  if (now - cache.dedup[k] > TTL_MAP[cache.dedup[k].severity]) delete cache.dedup[k];\n}\nconst keys = Object.keys(cache.dedup);\nif (keys.length > MAX_CACHE) {\n  keys\n    .sort((a, b) => cache.dedup[a].timestamp - cache.dedup[b].timestamp)\n    .slice(0, keys.length - MAX_CACHE)\n    .forEach(k => delete cache.dedup[k]);\n}\n\n/* === même extraction que votre script actuel === */\nconst payload = $json.body?.parameters?.alert || $json.alert || $json;\nif (!payload || typeof payload !== 'object') return [{ json: { drop: true } }];\n\nconst ruleId = String(payload.rule?.id || 'unknown');\nconst srcIp  = String(payload.data?.srcip || payload.srcip || 'unknown');\nconst agent  = String(payload.agent?.id || 'unknown');\nconst key    = `${ruleId}_${srcIp}_${agent}_${new Date(payload.timestamp || Date.now()).toISOString().slice(0, 16)}`;\n\n/* détermine sévérité */\nconst lvl = Number(payload.rule?.level || 0);\nconst severity = lvl >= 12 ? 'CRITICAL'\n               : lvl >= 8  ? 'HIGH'\n               : lvl >= 5  ? 'MEDIUM'\n                           : 'LOW';\n\n/* déjà vu ? */\nif (cache.dedup[key] && (now - cache.dedup[key].timestamp < TTL_MAP[severity])) {\n  return [{ json: { drop: true } }];\n}\n\n/* enregistre */\ncache.dedup[key] = { timestamp: now, severity };\n\n/* === même normalisation que votre script actuel === */\nconst normalized = {\n  timestamp: new Date(payload.timestamp || Date.now()).toISOString(),\n  agent: {\n    id:   agent,\n    name: String(payload.agent?.name || 'N/A'),\n    ip:   String(payload.agent?.ip   || 'N/A')\n  },\n  rule: {\n    id:          ruleId,\n    description: String(payload.rule?.description || ''),\n    level:       lvl,\n    groups:      Array.isArray(payload.rule?.groups) ? payload.rule.groups : [],\n    firedtimes:  Number(payload.rule?.firedtimes || 1)\n  },\n  file: payload.syscheck ? {\n    path:        String(payload.syscheck.path || ''),\n    size:        Number(payload.syscheck.size_after) || null,\n    permissions: String(payload.syscheck.perm_after || ''),\n    owner:       String(payload.syscheck.uname_after || ''),\n    group:       String(payload.syscheck.gname_after || ''),\n    md5:         String(payload.syscheck.md5_after || ''),\n    sha1:        String(payload.syscheck.sha1_after || ''),\n    sha256:      String(payload.syscheck.sha256_after || '')\n  } : null,\n  src: {\n    ip:   srcIp,\n    port: Number(payload.data?.srcport || payload.srcport) || null,\n    user: String(payload.data?.srcuser || payload.user || 'unknown')\n  },\n  dst: {\n    ip:   String(payload.data?.dstip || payload.dstip || payload.agent?.ip || ''),\n    user: String(payload.data?.dstuser || payload.user || 'unknown')\n  },\n  mitre: {\n    id:        Array.isArray(payload.rule?.mitre?.id)        ? payload.rule.mitre.id        : [],\n    tactic:    Array.isArray(payload.rule?.mitre?.tactic)    ? payload.rule.mitre.tactic    : [],\n    technique: Array.isArray(payload.rule?.mitre?.technique) ? payload.rule.mitre.technique : []\n  },\n  log: {\n    message:  String(payload.full_log || '').slice(0, 1000),\n    location: String(payload.location || 'N/A'),\n    program:  String(payload.predecoder?.program_name || 'unknown')\n  },\n  compliance: {\n    gdpr:        Array.isArray(payload.rule?.gdpr)        ? payload.rule.gdpr        : [],\n    hipaa:       Array.isArray(payload.rule?.hipaa)       ? payload.rule.hipaa       : [],\n    pci_dss:     Array.isArray(payload.rule?.pci_dss)     ? payload.rule.pci_dss     : [],\n    nist_800_53: Array.isArray(payload.rule?.nist_800_53) ? payload.rule.nist_800_53 : [],\n    gpg13:       Array.isArray(payload.rule?.gpg13)       ? payload.rule.gpg13       : [],\n    tsc:         Array.isArray(payload.rule?.tsc)         ? payload.rule.tsc         : []\n  },\n  fingerprint: key,\n  severity\n};\n\nreturn [{ json: normalized }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        -224
+      ],
+      "id": "5570004f-4364-4854-9b87-01fc5f4d2a13",
+      "name": "Code"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "If alerts >=4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Summarization Chain 1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarization Chain 1": {
+      "main": [
+        [
+          {
+            "node": "Send a text message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If alerts >=4": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Summarization Chain 1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "callerPolicy": "workflowsFromSameOwner",
+    "saveExecutionProgress": true
+  }
+}
