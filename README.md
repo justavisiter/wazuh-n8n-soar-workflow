@@ -19,7 +19,6 @@ graph TD
     C --> D[Normalize & Deduplicate];
     D --> E[AI Summarization with Gemini];
     E --> F[Send Notification to Telegram];
-    D --> G[Log to Elasticsearch];
 ```
 
 ## 🛠️ Prerequisites
